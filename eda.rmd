@@ -1,0 +1,148 @@
+```{r}
+library(dplyr)
+library(ggplot2)
+```
+
+data cleaning!
+```{r}
+hist_mar <- read.csv('historical_marathon_dataset.csv')
+hist_mar$gender <- as.factor(hist_mar$gender)
+hist_mar$country <- as.factor(hist_mar$country)
+hist_mar$shoe_brand <- as.factor(hist_mar$shoe_brand)
+
+event_summary <- read.csv('event_summary.csv')
+event_summary$gel_support <- as.factor(event_summary$gel_support)
+event_summary$stretching_station <- as.factor(event_summary$stretching_station)
+event_summary$music_at_start <- as.factor(event_summary$music_at_start)
+
+data <- hist_mar %>%
+  left_join(event_summary, by = "year")
+
+data$needed_med <- !is.na(data$medical_km_bin)
+```
+
+
+
+Plots of variables over time
+
+```{r}
+# proportion of needed medical attention
+proportion_df <- data %>%
+  group_by(year) %>%
+  summarise(prop_needed_med = mean(needed_med, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(proportion_df, aes(x = year, y = prop_needed_med)) +
+  geom_line(color = "firebrick", size = 1) +
+  geom_point(color = "firebrick") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proportion of Runners Needing Medical Attention by Year",
+       x = "Year",
+       y = "Proportion of TRUE 'needed_med'") +
+  theme_minimal()
+
+
+# number of incidents
+summary_df <- data %>%
+  filter(needed_med == TRUE) %>%
+  group_by(year) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+ggplot(summary_df, aes(x = year, y = count)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Number of Incidents by Year",
+       x = "Year",
+       y = "Count of TRUE 'needed_med'") +
+  theme_minimal()
+
+# proportion of genders
+gender_props <- data %>%
+  filter(gender %in% c("Male", "Female")) %>% 
+  group_by(year, gender) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(year) %>%
+  mutate(proportion = count / sum(count)) %>%
+  ungroup()
+
+ggplot(gender_props, aes(x = year, y = proportion, fill = gender)) +
+  geom_col(position = "stack") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proportion of Male and Female by Year",
+       x = "Year",
+       y = "Proportion",
+       fill = "Gender") +
+  theme_minimal()
+
+# avg weight
+avg_weight_by_year <- data %>%
+  group_by(year) %>%
+  summarise(avg_weight = mean(weight, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(avg_weight_by_year, aes(x = year, y = avg_weight)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "darkgreen") +
+  labs(title = "Average Weight by Year",
+       x = "Year",
+       y = "Average Weight") +
+  theme_minimal()
+
+
+# avg weekly km
+avg_weekly_by_year <- data %>%
+  group_by(year) %>%
+  summarise(avg_weekly_km = mean(weekly_km, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(avg_weekly_by_year, aes(x = year, y = avg_weekly_km)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "darkgreen") +
+  labs(title = "Average Weekly KM",
+       x = "Year",
+       y = "Average Weekly KM") +
+  theme_minimal()
+
+# avg pb
+avg_pb_by_year <- data %>%
+  group_by(year) %>%
+  summarise(avg_pb = mean(personal_best, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(avg_pb_by_year, aes(x = year, y = avg_pb)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "darkgreen") +
+  labs(title = "Average PB",
+       x = "Year",
+       y = "Average PB") +
+  theme_minimal()
+
+## ok it looks decent for the predictors
+
+variables <- c("rainfall", "temp_10am", "humidity", "elevation_gain",
+               "hydration_stations", "toilet_stations", "crowding_density",
+               "newsletter_registration")
+
+for (var in variables) {
+  p <- ggplot(event_summary, aes(x = year, y = .data[[var]])) +
+    geom_line(color = "steelblue", size = 1) +
+    geom_point(color = "steelblue") +
+    labs(title = paste("Yearly", var),
+         x = "Year",
+         y = var) +
+    theme_minimal()
+  
+  print(p)
+}
+
+
+```
+
+
+
+
+
+
+
+
+
