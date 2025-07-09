@@ -1,5 +1,6 @@
 ```{r}
 library(dplyr)
+library(purrr)
 library(ggplot2)
 ```
 
@@ -7,18 +8,38 @@ data cleaning!
 ```{r}
 hist_mar <- read.csv('historical_marathon_dataset.csv')
 hist_mar$gender <- as.factor(hist_mar$gender)
+
+# country has lots of levels for US and typo for Australia
+hist_mar$country[hist_mar$country == "Aus"] <- "Australia"
+hist_mar$country[hist_mar$country == "Australaia"] <- "Australia"
+hist_mar$country[hist_mar$country == "US"] <- "USA"
+hist_mar$country[hist_mar$country == "United States"] <- "USA"
+hist_mar$country[is.na(hist_mar$country)] <- "Unkown"
 hist_mar$country <- as.factor(hist_mar$country)
+
+# shoe brand has some typos, and encode NA's as a new class
+hist_mar$shoe_brand[hist_mar$shoe_brand == "Addas"] <- "Adidas"
+hist_mar$shoe_brand[is.na(hist_mar$shoe_brand)] <- "Unkown"
+hist_mar <- hist_mar %>%
+  mutate(shoe_brand = str_trim(shoe_brand))
 hist_mar$shoe_brand <- as.factor(hist_mar$shoe_brand)
 
+# remove negative observations in weekly_km
+hist_mar <- hist_mar[hist_mar$weekly_km >= 0, ]
+
+# properly encode boolean features
+hist_mar <- hist_mar %>%
+  mutate(across(c(injured_prev_mth, injured_prev_qtr, injured_prev_hy), as.logical))
+
 event_summary <- read.csv('event_summary.csv')
-event_summary$gel_support <- as.factor(event_summary$gel_support)
-event_summary$stretching_station <- as.factor(event_summary$stretching_station)
-event_summary$music_at_start <- as.factor(event_summary$music_at_start)
+event_summary <- event_summary %>%
+  mutate(across(c(gel_support, stretching_station, music_at_start), as.logical))
 
 data <- hist_mar %>%
   left_join(event_summary, by = "year")
 
 data$needed_med <- !is.na(data$medical_km_bin)
+hist_mar$needed_med <- !is.na(hist_mar$medical_km_bin)
 ```
 
 
@@ -138,9 +159,49 @@ for (var in variables) {
 
 ```
 
+Compare historical data to this years data
+
+```{r}
+data_2025 <- read.csv('2025_marathon_data.csv')
+data_2025$gender <- as.factor(data_2025$gender)
+
+# country has lots of levels for US and typo for Australia
+data_2025$country[data_2025$country == "Aus"] <- "Australia"
+data_2025$country[data_2025$country == "Australaia"] <- "Australia"
+data_2025$country[data_2025$country == "US"] <- "USA"
+data_2025$country[data_2025$country == "United States"] <- "USA"
+data_2025$country[is.na(data_2025$country)] <- "Unkown"
+data_2025$country <- as.factor(data_2025$country)
+
+# shoe brand has some typos, and encode NA's as a new class
+data_2025$shoe_brand[data_2025$shoe_brand == "Addas"] <- "Adidas"
+data_2025$shoe_brand[is.na(data_2025$shoe_brand)] <- "Unkown"
+data_2025 <- data_2025 %>%
+  mutate(shoe_brand = str_trim(shoe_brand))
+data_2025$shoe_brand <- as.factor(data_2025$shoe_brand)
+
+# remove negative observations in weekly_km
+data_2025 <- data_2025[data_2025$weekly_km >= 0, ]
+
+# properly encode boolean features
+data_2025 <- data_2025 %>%
+  mutate(across(c(injured_prev_mth, injured_prev_qtr, injured_prev_hy), as.logical))
 
 
 
+summary(hist_mar)
+
+summary(data_2025)
+
+```
+
+```{r}
+hist(hist_mar$marathons_xp)
+hist(data_2025$marathons_xp)
+
+sum(hist_mar$marathons_xp == 0) / nrow(hist_mar)
+sum(data_2025$marathons_xp == 0) / nrow(data_2025)
+```
 
 
 

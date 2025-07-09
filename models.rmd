@@ -6,6 +6,10 @@ library(caret)
 library(MLmetrics)
 library(glmnet)
 library(car)
+library(survival)
+library(KMsurv)
+library(survminer)
+library(pROC)
 ```
 some notes
 - highly imbalanced class - use f1 score instead
@@ -85,12 +89,7 @@ class_data_engineered <- class_data %>%
     experience_per_age = marathons_xp / age,
     
     # === INJURY HISTORY PATTERNS ===
-    injury_cascade = as.numeric(injured_prev_mth == 1 & injured_prev_qtr == 1),
-    chronic_injury_pattern = as.numeric(injured_prev_mth == 1 & injured_prev_qtr == 1 & injured_prev_hy == 1),
-    recent_only_injury = as.numeric(injured_prev_mth == 1 & injured_prev_qtr == 0 & injured_prev_hy == 0),
-    worsening_injury = as.numeric(injured_prev_mth == 1 & injured_prev_qtr == 0),
-    improving_injury = as.numeric(injured_prev_mth == 0 & injured_prev_qtr == 1),
-    injury_free_recent = as.numeric(injured_prev_mth == 0 & injured_prev_qtr == 0),
+    # lol they were all collinear
     
     # === ENVIRONMENTAL STRESS FACTORS ===
     heat_humidity_interaction = temp_10am * humidity / 100,
@@ -103,15 +102,13 @@ class_data_engineered <- class_data %>%
     hydration_per_crowd = hydration_stations / crowding_density,
     toilet_per_crowd = toilet_stations / crowding_density,
     has_performance_support = as.numeric(gel_support == 1 | stretching_station == 1),
-    full_support_package = as.numeric(gel_support == 1 & stretching_station == 1),
-    minimal_hydration = as.numeric(hydration_stations <= 2),
-    inadequate_facilities = as.numeric(toilet_stations <= 1),
+    #full_support_package = as.numeric(gel_support == 1 & stretching_station == 1),
+    #minimal_hydration = as.numeric(hydration_stations <= 2),
+    #inadequate_facilities = as.numeric(toilet_stations <= 1),
     high_crowd_low_hydration = as.numeric(crowding_density > median(crowding_density, na.rm = TRUE) & 
                                          hydration_stations < median(hydration_stations, na.rm = TRUE)),
-    support_mismatch = as.numeric((hydration_stations < 3) & (gel_support == 1)),
+    #support_mismatch = as.numeric((hydration_stations < 3) & (gel_support == 1)),
     
-    # === DEMOGRAPHIC INTERACTIONS ===
-    age_experience_mismatch = age - marathons_xp * 2,
     
     # === CATEGORICAL ENGINEERING ===
     age_group = case_when(
@@ -179,6 +176,9 @@ cat("\nMissing values in new features:\n")
 print(missing_check[missing_check > 0])
 
 
+# explicitly remove some features
+class_data_engineered$age <- NULL
+
 
 model <- glm(needed_med ~ .-year, data=class_data_engineered, family=binomial())
 summary(model)
@@ -194,7 +194,7 @@ the robots code
 ```{r}
 class_data <- data.frame(class_data_engineered)
 # pick a threshold 
-threshold <- 0.33
+threshold <- 0.2
 
 # Custom F1 score function (avoiding caret's confusionMatrix to prevent warnings)
 # i actually made it fbeta
@@ -402,5 +402,384 @@ final_model <- lasso_model
 print("\nFinal model optimized for F1 score")
 print(paste("Final lambda:", round(cv_f1_results$best_lambda, 6)))
 print(paste("Number of selected features:", length(selected_features) - 1))
+
+```
+
+```{r}
+coefs <- stepwise$coefficients
+formula <- stepwise$formula
+
+print(formula)
+
+```
+
+stepwise selection algo
+
+```{r}
+set.seed(1)
+train_idx <- sample(nrow(class_data), 0.75 * nrow(class_data_engineered))
+train_data <- class_data_engineered[train_idx, ]
+test_data <- class_data_engineered[-train_idx, ]
+```
+
+```{r}
+init_model <- glm(needed_med ~ .-year, data=train_data, family=binomial())
+stepwise <- stats::step(init_model, direction="backward")
+
+summary(stepwise)
+
+```
+backwards stepwise is a lot more parsimonious with a lower AIC
+
+```{r}
+threshold <- 0.2
+probs <- predict(stepwise, newdata = test_data, type = "response")
+preds <- ifelse(probs > threshold, T, F)
+actual <- test_data$needed_med
+
+table(preds, actual)
+
+roc_obj <- roc(actual, probs)
+auc(roc_obj)
+plot(roc_obj, main = paste("ROC Curve (AUC =", round(auc(roc_obj), 3), ")"))
+```
+
+
+```{r}
+beta <- 0.5
+f1_score <- function(actual, predicted) {
+  # Ensure both are numeric 0/1
+  actual <- as.numeric(actual)
+  predicted <- as.numeric(predicted)
+  
+  # Calculate confusion matrix components manually
+  tp <- sum(actual == 1 & predicted == 1)  # True Positives
+  fp <- sum(actual == 0 & predicted == 1)  # False Positives
+  fn <- sum(actual == 1 & predicted == 0)  # False Negatives
+  
+  # Calculate precision and recall
+  precision <- ifelse(tp + fp == 0, 0, tp / (tp + fp))
+  recall <- ifelse(tp + fn == 0, 0, tp / (tp + fn))
+  
+  # Calculate F1 score
+  f1 <- ifelse(precision + recall == 0, 0, ((1+beta^2)*precision * recall) / (beta^2*precision + recall))
+  
+  return(f1)
+}
+
+k <- 10
+folds <- createFolds(class_data_engineered$needed_med, k = k, list = F)
+
+thresholds <- seq(0.23, 0.26, by=0.005)
+results <- c()
+for (threshold in thresholds){
+  cv_scores <- c()
+  for (i in 1:k) {
+    train <- class_data_engineered[folds!=i, ]
+    val <- class_data_engineered[folds==i, ]
+    
+    model <- glm(new_f, family=binomial(), data=train)
+    probs <- predict(model, newdata=val, type="response")
+    preds <- ifelse(probs > threshold, 1, 0)
+    
+    cv_f1 <- f1_score(val$needed_med, preds)
+    cv_scores <- c(cv_scores, cv_f1)
+  }
+  results <- c(results, mean(cv_scores))
+  print(mean(cv_scores))
+}
+
+cv_results <- data.frame(
+  threshold = thresholds,
+  f1 = results
+)
+
+```
+
+```{r}
+plot(cv_results$threshold, cv_results$f1)
+View(cv_results)
+```
+
+0.18
+
+Make predictions on test
+
+```{r}
+data_2025 <- read.csv('2025_marathon_data.csv')
+data_2025$gender <- as.factor(data_2025$gender)
+
+# country has lots of levels for US and typo for Australia
+data_2025$country[data_2025$country == "Aus"] <- "Australia"
+data_2025$country[data_2025$country == "Australaia"] <- "Australia"
+data_2025$country[data_2025$country == "US"] <- "USA"
+data_2025$country[data_2025$country == "United States"] <- "USA"
+data_2025$country[is.na(data_2025$country)] <- "Unkown"
+data_2025$country <- as.factor(data_2025$country)
+
+# shoe brand has some typos, and encode NA's as a new class
+data_2025$shoe_brand[data_2025$shoe_brand == "Addas"] <- "Adidas"
+data_2025$shoe_brand[is.na(data_2025$shoe_brand)] <- "Unkown"
+data_2025 <- data_2025 %>%
+  mutate(shoe_brand = str_trim(shoe_brand))
+data_2025$shoe_brand <- as.factor(data_2025$shoe_brand)
+
+# remove negative observations in weekly_km
+data_2025 <- data_2025[data_2025$weekly_km >= 0, ]
+
+# properly encode boolean features
+data_2025 <- data_2025 %>%
+  mutate(across(c(injured_prev_mth, injured_prev_qtr, injured_prev_hy), as.logical))
+
+# 2025 event
+event_summary_2025 <- read.csv('2025_event_vars.csv')
+event_summary_2025 <- event_summary_2025 %>%
+  mutate(across(c(gel_support, stretching_station, music_at_start), as.logical))
+
+combined_data <- cbind(
+  data_2025,
+  event_summary_2025[rep(1, nrow(data_2025)), ]
+)
+
+
+# Create engineered features
+data_2025_engineered <- combined_data %>%
+  mutate(
+    # === PHYSICAL PERFORMANCE FEATURES ===
+    bmi = weight / (height/100)^2,
+    training_intensity = weekly_km / age,
+    experience_per_age = marathons_xp / age,
+    
+    # === INJURY HISTORY PATTERNS ===
+    # lol they were all collinear
+    
+    # === ENVIRONMENTAL STRESS FACTORS ===
+    heat_humidity_interaction = temp_10am * humidity / 100,
+    temp_humidity_ratio = ifelse(humidity > 0, temp_10am / humidity, temp_10am),
+    extreme_heat = as.numeric(temp_10am > 26 & humidity > 71), #using 3rd quantile
+    extreme_weather = as.numeric(temp_10am > 30 | humidity > 80 | rainfall > 3.8), # 3rd quantile again
+    high_temp_low_humidity = as.numeric(temp_10am > 26 & humidity < 58),
+    
+    # === RACE SUPPORT QUALITY ===
+    hydration_per_crowd = hydration_stations / crowding_density,
+    toilet_per_crowd = toilet_stations / crowding_density,
+    has_performance_support = as.numeric(gel_support == 1 | stretching_station == 1),
+    #full_support_package = as.numeric(gel_support == 1 & stretching_station == 1),
+    #minimal_hydration = as.numeric(hydration_stations <= 2),
+    #inadequate_facilities = as.numeric(toilet_stations <= 1),
+    high_crowd_low_hydration = as.numeric(crowding_density > median(crowding_density, na.rm = TRUE) & 
+                                         hydration_stations < median(hydration_stations, na.rm = TRUE)),
+    #support_mismatch = as.numeric((hydration_stations < 3) & (gel_support == 1)),
+    
+    
+    # === CATEGORICAL ENGINEERING ===
+    age_group = case_when(
+      age < 30 ~ "Under_30",
+      age < 40 ~ "30s",
+      age < 50 ~ "40s",
+      age < 60 ~ "50s",
+      TRUE ~ "60_plus"
+    ),
+    
+    training_level = case_when( # using quantiles
+      weekly_km < 34 ~ "Low",
+      weekly_km < 63 ~ "Medium",
+      TRUE ~ "High"
+    ),
+    
+    experience_level = case_when(
+      marathons_xp == 0 ~ "First_timer",
+      marathons_xp < 3 ~ "Novice",
+      marathons_xp < 5 ~ "Intermediate",
+      TRUE ~ "Expert"
+    ),
+    
+    pb_tier = case_when(
+      personal_best < 180 ~ "Elite",
+      personal_best < 240 ~ "Fast",
+      personal_best < 300 ~ "Average",
+      TRUE ~ "Recreational"
+    ),
+    
+    # === HIGH-RISK INDICATORS ===
+    high_risk_age = as.numeric(age > 50),
+    overexertion_risk = as.numeric(weekly_km > (age * 2)),
+    inexperienced_ambitious = as.numeric(marathons_xp < 3 & personal_best < 240),
+    
+    # === INTERACTION TERMS ===
+    age_recent_injury = age * injured_prev_mth,
+    poor_support_harsh_conditions = as.numeric(hydration_stations < median(hydration_stations, na.rm = TRUE)) * 
+                                   (temp_10am + humidity),
+    
+    # === CUMULATIVE RISK SCORE ===
+    cumulative_risk_score = (injured_prev_mth * 3 + injured_prev_qtr * 2 + injured_prev_hy) * 
+                           (temp_10am + humidity) / 100
+  )
+
+# Create percentile-based features within gender groups
+data_2025_engineered <- data_2025_engineered %>%
+  group_by(gender) %>%
+  mutate(
+    weekly_km_percentile = percent_rank(weekly_km),
+    age_percentile = percent_rank(age),
+    weight_percentile = percent_rank(weight),
+    bmi_percentile = percent_rank(bmi),
+    experience_percentile = percent_rank(marathons_xp),
+    pb_percentile = percent_rank(desc(personal_best))  # desc because lower time is better
+  ) %>%
+  ungroup()
+```
+
+fbeta with beta=0.5
+threshold of 0.245.
+
+```{r}
+new_f <- needed_med ~ gender + height + weekly_km + marathons_xp + personal_best + injured_prev_qtr + injured_prev_hy + temp_10am + humidity + 
+    rainfall + hydration_stations + gel_support + stretching_station + 
+    music_at_start + toilet_stations + experience_per_age + toilet_per_crowd + 
+    has_performance_support + age_group + training_level + high_risk_age + 
+    inexperienced_ambitious + age_recent_injury + 
+    weekly_km_percentile + bmi_percentile + 
+    pb_percentile
+
+model <- glm(new_f, family=binomial(), data=class_data_engineered)
+threshold <- 0.245
+
+data_2025_engineered <- na.omit(data_2025_engineered)
+probs <- predict(model, newdata=data_2025_engineered, type="response")
+preds <- ifelse(probs > threshold, 1, 0)
+
+cat("Predicted number of runners that require medical attention:", sum(preds), "\n")
+cat("Estimated proportion of total runners that require medical attention:", sum(preds) / length(preds))
+
+```
+
+```{r}
+summary(model)
+```
+```{r}
+vif(model)
+```
+```{r}
+library(corrplot)
+
+# Define your predictor variables
+predictors <- c("height", "weekly_km", "marathons_xp", "personal_best", 
+                "temp_10am", "humidity", 
+                "rainfall", "hydration_stations", 
+                "toilet_stations", "experience_per_age", 
+                "toilet_per_crowd", 
+                "high_risk_age", 
+                "age_recent_injury", "cumulative_risk_score")
+
+# Calculate correlation matrix for your predictors
+# Replace 'your_data' with your actual dataset name
+cor_matrix <- cor(class_data_engineered[, predictors], use = "complete.obs")
+
+# Create collinearity heatmap
+corrplot(cor_matrix, 
+         method = "color",           # Use color squares
+         type = "upper",            # Show upper triangle only
+         order = "hclust",          # Order by hierarchical clustering
+         tl.cex = 0.7,             # Text label size
+         tl.col = "black",         # Text label color
+         tl.srt = 45,              # Text label rotation
+         addCoef.col = "black",    # Add correlation coefficients
+         number.cex = 0.6,         # Coefficient text size
+         col = colorRampPalette(c("blue", "white", "red"))(200),  # Color palette
+         title = "Collinearity Heatmap",
+         mar = c(0,0,2,0))         # Margins
+```
+
+# Survival Analysis
+
+
+
+```{r}
+med_cases <- hist_mar[!is.na(hist_mar$medical_km_bin), ]
+med_cases$age_group <- cut(med_cases$age, 
+                               breaks = c(-Inf, 30, 40, 50, Inf),
+                               labels = c("<30", "30-39", "40-49", "50+"),
+                               right = FALSE)
+
+# lots of cases!
+# good to do nonparametric
+nrow(med_cases)
+
+surv_fit <- survfit(Surv(medical_km_bin, needed_med) ~ 1,
+                    data = med_cases, conf.int=0.99)
+
+ggsurvplot(
+  surv_fit, 
+  data = med_cases,
+  title="Survival Curves",
+  xlab = "km",
+  legend = "right",
+  conf.int=F
+)
+```
+
+```{r}
+# Extract survival probabilities and times from your fitted model
+surv_summary <- summary(surv_fit)
+times <- surv_summary$time
+survival_probs <- surv_summary$surv
+
+# Create a function to predict events at each interval
+predict_events <- function(surv_fit, starting_population, time_intervals = seq(0, max(times), by = 2)) {
+  
+  # Get survival probabilities at your specific time points
+  surv_at_times <- summary(surv_fit, times = time_intervals, extend = TRUE)
+  
+  # Calculate number still at risk at each time point
+  n_at_risk <- starting_population * surv_at_times$surv
+  
+  # Calculate events in each interval (difference between consecutive time points)
+  events_per_interval <- c(0, diff(-n_at_risk))  # negative diff gives events
+  
+  # Create results data frame
+  results <- data.frame(
+    time_start = time_intervals[-length(time_intervals)],
+    time_end = time_intervals[-1],
+    n_at_risk_start = n_at_risk[-length(n_at_risk)],
+    predicted_events = events_per_interval[-1]
+  )
+  
+  return(results)
+}
+
+starting_pop <- 561
+predictions <- predict_events(surv_fit, starting_pop)
+print(predictions)
+
+plot(predictions$time_end, predictions$predicted_events)
+```
+```{r}
+predictions$med_persons_needed <- ceiling(predictions$predicted_events / 5)
+
+# Reshape data for plotting both variables
+plot_data <- predictions %>%
+  select(time_end, predicted_events, med_persons_needed) %>%
+  pivot_longer(cols = c(predicted_events, med_persons_needed),
+               names_to = "variable",
+               values_to = "value")
+
+ggplot(predictions, aes(x = time_end)) +
+  # Column chart for medical personnel needed
+  geom_col(aes(y = med_persons_needed), fill = "coral", alpha = 0.6, width = 0.7) +
+  # Line plot for predicted events
+  geom_line(aes(y = predicted_events), color = "steelblue", size = 1.2) +
+  geom_point(aes(y = predicted_events), color = "steelblue", size = 2) +
+  labs(title = "Predicted Events (Line) vs Medical Personnel Needed (Bars) Over Time",
+       x = "Time End",
+       y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  # Add legend manually
+  annotate("text", x = Inf, y = Inf, 
+           label = "● Predicted Events\n■ Medical Personnel Needed", 
+           hjust = 1.1, vjust = 1.1, size = 3.5,
+           color = c("steelblue"))
+
 
 ```
